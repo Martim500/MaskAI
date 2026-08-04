@@ -38,14 +38,23 @@ def main() -> None:
         aws_session_token=os.getenv("AWS_SESSION_TOKEN") or None,
     )
 
+    # inputAction/inputEnabled を明示しないと入力側(source=INPUT)のマスキングが有効にならない。
+    pii_entities_config = [
+        {
+            "type": t,
+            "action": "ANONYMIZE",
+            "inputAction": "ANONYMIZE",
+            "inputEnabled": True,
+            "outputAction": "ANONYMIZE",
+            "outputEnabled": True,
+        }
+        for t in PII_ENTITY_TYPES
+    ]
+
     response = client.create_guardrail(
         name=GUARDRAIL_NAME,
         description="MaskAgentチャットアプリ用: 入力中のPIIをマスキングする",
-        sensitiveInformationPolicy={
-            "piiEntitiesConfig": [
-                {"type": t, "action": "ANONYMIZE"} for t in PII_ENTITY_TYPES
-            ]
-        },
+        sensitiveInformationPolicyConfig={"piiEntitiesConfig": pii_entities_config},
         blockedInputMessaging="このメッセージには送信できない内容が含まれています。",
         blockedOutputsMessaging="この回答は表示できません。",
     )
