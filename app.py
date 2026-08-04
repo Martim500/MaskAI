@@ -24,9 +24,11 @@ MAX_RETRIES = 3
 RETRY_BACKOFF_SECONDS = 1.5
 
 MODEL_IDS = {
-    "claude-sonnet-5": "anthropic.claude-sonnet-5",
-    "claude-opus-4-8": "anthropic.claude-opus-4-8",
-    "claude-haiku-4-5-20251001": "anthropic.claude-haiku-4-5-20251001-v1:0",
+    # オンデマンド呼び出しには推論プロファイルIDが必要（生のfoundation-model IDは不可）。
+    # sonnet-5はjp.リージョンプロファイルが無いためglobal.を使用。
+    "claude-sonnet-5": "global.anthropic.claude-sonnet-5",
+    "claude-opus-4-8": "jp.anthropic.claude-opus-4-8",
+    "claude-haiku-4-5-20251001": "jp.anthropic.claude-haiku-4-5-20251001-v1:0",
 }
 
 st.set_page_config(page_title="Masked Prompt Chat", layout="wide")

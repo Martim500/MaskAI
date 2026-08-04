@@ -8,12 +8,15 @@ Bedrock Guardrails でPIIをマスキングしてから、Amazon Bedrock経由�
 ### 1. IAMユーザー
 このアプリ専用のIAMユーザー（本リポジトリでは `REDACTED_IAM_USER` を想定）を用意してください。
 必要なIAM権限（最低限）:
+- `bedrock:InvokeModel` / `bedrock:InvokeModelWithResponseStream`（Converse APIの権限もこれでカバーされる。`bedrock:Converse`は別途不要）
 - `bedrock:ApplyGuardrail`
-- `bedrock:Converse`
-- `bedrock:ConverseStream`（ストリーミング応答を使う場合）
 
 > MFA必須ポリシー（`BlockNonMFARequests`等）が付与されたメインユーザーとは別に、
 > アプリ専用ユーザーを分離しておくと、常時起動するアプリからの利用がしやすくなります。
+
+> **モデルIDについて**: オンデマンド呼び出しでは生のfoundation-model ID（例: `anthropic.claude-sonnet-5`）は使えず、
+> 推論プロファイルID（例: `jp.anthropic.claude-opus-4-8`, `global.anthropic.claude-sonnet-5`）を指定する必要がある。
+> `aws bedrock list-inference-profiles` で確認できる。本アプリの `app.py` は動作確認済みのプロファイルIDを設定済み。
 
 ### 2. Bedrock Guardrail の作成
 以下のいずれかで作成する。
