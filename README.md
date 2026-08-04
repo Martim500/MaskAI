@@ -16,10 +16,19 @@ Bedrock Guardrails でPIIをマスキングしてから、Amazon Bedrock経由�
 > アプリ専用ユーザーを分離しておくと、常時起動するアプリからの利用がしやすくなります。
 
 ### 2. Bedrock Guardrail の作成
-AWSコンソール → Bedrock → Guardrails → 作成
-- 「機密情報のフィルター」で検知したいPII種別（氏名、メールアドレス、電話番号、クレジットカード番号など）を選択
-- 動作を **「マスク（匿名化）」** に設定
-- 作成後、Guardrail ID と Version（未発行の場合は `DRAFT`）を控える
+以下のいずれかで作成する。
+
+- **コンソール**: AWSコンソール → Bedrock → Guardrails → 作成
+  - 「機密情報のフィルター」で検知したいPII種別（氏名、メールアドレス、電話番号、クレジットカード番号など）を選択
+  - 動作を **「マスク（匿名化）」** に設定
+- **スクリプト**: `bedrock:CreateGuardrail` 権限を持つ認証情報で
+  ```bash
+  python scripts/create_guardrail.py
+  ```
+  を実行すると、同じ設定（氏名・メール・電話番号・住所・クレジットカード番号をマスク）でGuardrailを自動作成する。
+  ※ MaskAgentアプリ実行用のIAMユーザーには、この作成権限はあえて付与していない（最小権限のため）。
+
+作成後、Guardrail ID と Version（未発行の場合は `DRAFT`）を控える。
 
 ### 3. モデルアクセス
 Bedrock コンソール → モデルアクセス で、使用するClaudeモデル（Sonnet 5 / Opus 4.8 / Haiku 4.5）へのアクセスを有効化してください。
