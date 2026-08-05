@@ -41,14 +41,25 @@ with st.sidebar:
     aws_region = st.text_input(
         "AWS Region", value=os.getenv("AWS_REGION", "ap-northeast-1")
     )
-    aws_access_key_id = st.text_input(
-        "AWS Access Key ID", value=os.getenv("AWS_ACCESS_KEY_ID", "")
+    aws_access_key_id_input = st.text_input(
+        "AWS Access Key ID",
+        value="",
+        placeholder="未入力の場合は .env の値を使用",
     )
-    aws_secret_access_key = st.text_input(
+    aws_secret_access_key_input = st.text_input(
         "AWS Secret Access Key",
-        value=os.getenv("AWS_SECRET_ACCESS_KEY", ""),
+        value="",
         type="password",
+        placeholder="未入力の場合は .env の値を使用",
     )
+    # サイドバーには実際の認証情報を事前入力しない（画面上に平文で出さないため）。
+    # 未入力ならこの下で .env の値にフォールバックする。
+    aws_access_key_id = aws_access_key_id_input or os.getenv("AWS_ACCESS_KEY_ID", "")
+    aws_secret_access_key = aws_secret_access_key_input or os.getenv(
+        "AWS_SECRET_ACCESS_KEY", ""
+    )
+    if os.getenv("AWS_ACCESS_KEY_ID") and os.getenv("AWS_SECRET_ACCESS_KEY"):
+        st.caption(".env の認証情報を使用中（上書きする場合のみ入力）")
 
     st.divider()
 
@@ -134,9 +145,18 @@ def call_claude(messages: list[dict]) -> str:
             response = client.converse(
                 modelId=model_id,
                 messages=messages,
-                inferenceConfig={"maxTokens": 2000},
+                inferenceConfig={"maxTokens": 4000},
             )
-            return response["output"]["message"]["content"][0]["text"]
+            content_blocks = response["output"]["message"]["content"]
+            text_blocks = [block["text"] for block in content_blocks if "text" in block]
+            if not text_blocks:
+                # 思考(reasoning)だけでmax_tokensに達した場合など、テキスト応答が無いケース
+                raise ChatError(
+                    "モデルからテキスト応答が得られませんでした"
+                    f"（stopReason={response.get('stopReason')}）。"
+                    "出力上限に達した可能性があります。質問を短くするか、時間をおいて再度お試しください。"
+                )
+            return "\n".join(text_blocks)
         except ClientError as exc:
             error_code = exc.response.get("Error", {}).get("Code", "")
             # 認証・権限・入力不正はリトライしても解決しないため即座に失敗させる
