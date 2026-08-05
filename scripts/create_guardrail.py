@@ -26,6 +26,7 @@ PII_ENTITY_TYPES = [
     "PHONE",
     "ADDRESS",
     "CREDIT_DEBIT_CARD_NUMBER",
+    "AGE",
 ]
 
 

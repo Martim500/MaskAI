@@ -6,12 +6,13 @@
 起動方法:
     streamlit run app.py
 
-設定値は環境変数 / .env からも読み込めます（.env.example 参照）。
-サイドバー入力は環境変数の値を上書きするために使えます。
+AWS認証情報・Guardrail ID/Versionは .env / 環境変数からのみ読み込む
+（画面上には表示・入力しない。.env.example 参照）。
 """
 
 import os
 import time
+import uuid
 
 import boto3
 import streamlit as st
@@ -31,72 +32,28 @@ MODEL_IDS = {
     "claude-haiku-4-5-20251001": "jp.anthropic.claude-haiku-4-5-20251001-v1:0",
 }
 
+AWS_REGION = os.getenv("AWS_REGION", "ap-northeast-1")
+AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID", "")
+AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY", "")
+GUARDRAIL_ID = os.getenv("GUARDRAIL_ID", "")
+GUARDRAIL_VERSION = os.getenv("GUARDRAIL_VERSION", "DRAFT")
+
 st.set_page_config(page_title="Masked Prompt Chat", layout="wide")
 
-# ── サイドバー設定 ────────────────────────────────────
-with st.sidebar:
-    st.header("設定")
-
-    st.subheader("AWS / Bedrock")
-    aws_region = st.text_input(
-        "AWS Region", value=os.getenv("AWS_REGION", "ap-northeast-1")
-    )
-    aws_access_key_id_input = st.text_input(
-        "AWS Access Key ID",
-        value="",
-        placeholder="未入力の場合は .env の値を使用",
-    )
-    aws_secret_access_key_input = st.text_input(
-        "AWS Secret Access Key",
-        value="",
-        type="password",
-        placeholder="未入力の場合は .env の値を使用",
-    )
-    # サイドバーには実際の認証情報を事前入力しない（画面上に平文で出さないため）。
-    # 未入力ならこの下で .env の値にフォールバックする。
-    aws_access_key_id = aws_access_key_id_input or os.getenv("AWS_ACCESS_KEY_ID", "")
-    aws_secret_access_key = aws_secret_access_key_input or os.getenv(
-        "AWS_SECRET_ACCESS_KEY", ""
-    )
-    if os.getenv("AWS_ACCESS_KEY_ID") and os.getenv("AWS_SECRET_ACCESS_KEY"):
-        st.caption(".env の認証情報を使用中（上書きする場合のみ入力）")
-
-    st.divider()
-
-    st.subheader("Bedrock Guardrails")
-    guardrail_id = st.text_input("Guardrail ID", value=os.getenv("GUARDRAIL_ID", ""))
-    guardrail_version = st.text_input(
-        "Guardrail Version", value=os.getenv("GUARDRAIL_VERSION", "DRAFT")
-    )
-
-    st.divider()
-
-    st.subheader("Claude モデル")
-    model = st.selectbox("Model", list(MODEL_IDS.keys()), index=0)
-
-    st.divider()
-    if st.button("会話をリセット"):
-        st.session_state.clear()
-        st.rerun()
-
-st.title("Masked Prompt Chat")
-st.caption("入力はBedrock Guardrailsでマスキングされた上でBedrock Claudeに送信されます")
-
-# ── セッション状態初期化 ──────────────────────────────
-if "display_messages" not in st.session_state:
-    st.session_state.display_messages = []  # 画面表示用（マスク前後含む）
-if "api_messages" not in st.session_state:
-    st.session_state.api_messages = []  # Bedrock Converseに渡す実際の履歴
-
-
-def bedrock_client(service_name: str):
-    """AWS認証情報を明示的に指定してBedrockクライアントを作る。"""
-    return boto3.client(
-        service_name,
-        region_name=aws_region,
-        aws_access_key_id=aws_access_key_id or None,
-        aws_secret_access_key=aws_secret_access_key or None,
-    )
+st.markdown(
+    """
+    <style>
+    #MainMenu, header, footer {visibility: hidden;}
+    section[data-testid="stSidebar"] { width: 260px !important; }
+    section[data-testid="stSidebar"] button {
+        text-align: left;
+        justify-content: flex-start;
+    }
+    .block-container { max-width: 780px; padding-top: 2rem; }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 
 class MaskingError(Exception):
@@ -107,6 +64,15 @@ class ChatError(Exception):
     """Bedrock Claudeの呼び出しが失敗したことを表す。"""
 
 
+def bedrock_client(service_name: str):
+    return boto3.client(
+        service_name,
+        region_name=AWS_REGION,
+        aws_access_key_id=AWS_ACCESS_KEY_ID or None,
+        aws_secret_access_key=AWS_SECRET_ACCESS_KEY or None,
+    )
+
+
 def mask_text(text: str) -> tuple[str, bool]:
     """Bedrock GuardrailsでPIIをマスキングする。戻り値: (マスク後テキスト, マスクされたか)"""
     client = bedrock_client("bedrock-runtime")
@@ -115,8 +81,8 @@ def mask_text(text: str) -> tuple[str, bool]:
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             response = client.apply_guardrail(
-                guardrailIdentifier=guardrail_id,
-                guardrailVersion=guardrail_version,
+                guardrailIdentifier=GUARDRAIL_ID,
+                guardrailVersion=GUARDRAIL_VERSION,
                 source="INPUT",
                 content=[{"text": {"text": text}}],
             )
@@ -134,10 +100,10 @@ def mask_text(text: str) -> tuple[str, bool]:
     raise MaskingError(str(last_error)) from last_error
 
 
-def call_claude(messages: list[dict]) -> str:
+def call_claude(messages: list[dict], model_key: str) -> str:
     """Bedrock Converse APIでClaudeを呼び出し、応答テキストを返す。失敗時はリトライする。"""
     client = bedrock_client("bedrock-runtime")
-    model_id = MODEL_IDS[model]
+    model_id = MODEL_IDS[model_key]
 
     last_error: Exception | None = None
     for attempt in range(1, MAX_RETRIES + 1):
@@ -177,44 +143,120 @@ def call_claude(messages: list[dict]) -> str:
     raise ChatError(str(last_error)) from last_error
 
 
-# ── 過去メッセージの再表示 ────────────────────────────
-for msg in st.session_state.display_messages:
+# ── セッション状態初期化 ──────────────────────────────
+def new_session() -> str:
+    session_id = str(uuid.uuid4())
+    st.session_state.sessions[session_id] = {
+        "title": "新しいチャット",
+        "display_messages": [],
+        "api_messages": [],
+    }
+    st.session_state.current_session_id = session_id
+    return session_id
+
+
+if "sessions" not in st.session_state:
+    st.session_state.sessions = {}
+    st.session_state.current_session_id = None
+if "masking_enabled" not in st.session_state:
+    st.session_state.masking_enabled = True
+if "model_key" not in st.session_state:
+    st.session_state.model_key = next(iter(MODEL_IDS))
+if not st.session_state.sessions:
+    new_session()
+
+# ── 起動時の必須設定チェック ──────────────────────────
+if not AWS_ACCESS_KEY_ID or not AWS_SECRET_ACCESS_KEY:
+    st.error(
+        "AWS認証情報が未設定です。.env の AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY を設定してください。"
+    )
+    st.stop()
+
+# ── サイドバー（Claude風: 新規チャット + セッション一覧 + 設定） ──
+with st.sidebar:
+    st.markdown("**Masked Prompt Chat**")
+
+    if st.button("＋ 新しいチャット", use_container_width=True):
+        new_session()
+        st.rerun()
+
+    st.divider()
+
+    for sid, sess in list(st.session_state.sessions.items()):
+        is_current = sid == st.session_state.current_session_id
+        label = ("💬 " if is_current else "　") + sess["title"]
+        if st.button(label, key=f"session_btn_{sid}", use_container_width=True):
+            st.session_state.current_session_id = sid
+            st.rerun()
+
+    st.divider()
+
+    with st.popover("⚙️ 設定", use_container_width=True):
+        st.session_state.masking_enabled = st.toggle(
+            "PIIマスキングを有効にする",
+            value=st.session_state.masking_enabled,
+            help="OFFにするとBedrock Guardrailsを通さず、入力をそのままClaudeに送信します。",
+        )
+        st.session_state.model_key = st.selectbox(
+            "モデル",
+            list(MODEL_IDS.keys()),
+            index=list(MODEL_IDS.keys()).index(st.session_state.model_key),
+        )
+        st.caption(
+            f"Guardrail ID: {GUARDRAIL_ID or '未設定'} / Version: {GUARDRAIL_VERSION}"
+        )
+
+        st.divider()
+        if st.button("このチャットを削除", use_container_width=True):
+            del st.session_state.sessions[st.session_state.current_session_id]
+            if not st.session_state.sessions:
+                new_session()
+            else:
+                st.session_state.current_session_id = next(
+                    iter(st.session_state.sessions)
+                )
+            st.rerun()
+        if st.button("すべてのチャットを削除", use_container_width=True):
+            st.session_state.sessions = {}
+            new_session()
+            st.rerun()
+
+# ── メイン画面 ────────────────────────────────────────
+current = st.session_state.sessions[st.session_state.current_session_id]
+
+if not st.session_state.masking_enabled:
+    st.caption("⚠ マスキングOFF: 入力はそのままBedrock Claudeに送信されます")
+
+for msg in current["display_messages"]:
     with st.chat_message(msg["role"]):
         st.write(msg["content"])
         if msg.get("masked_note"):
             with st.expander("マスキング内容を確認"):
                 st.text(msg["masked_note"])
 
-# ── 入力欄 ────────────────────────────────────────────
 user_input = st.chat_input("メッセージを入力...")
 
 if user_input:
-    if not guardrail_id:
-        st.error(
-            "Guardrail ID が未設定です。サイドバーで入力するか、.env の GUARDRAIL_ID を設定してください。"
-        )
-        st.stop()
-    if not aws_access_key_id or not aws_secret_access_key:
-        st.error(
-            "AWS Access Key ID / Secret Access Key が未設定です。"
-            "サイドバーで入力するか、.env に設定してください。"
-        )
+    if st.session_state.masking_enabled and not GUARDRAIL_ID:
+        st.error(".env の GUARDRAIL_ID が未設定です。")
         st.stop()
 
     with st.chat_message("user"):
         st.write(user_input)
 
-    # ① マスキング
-    try:
-        with st.spinner("マスキング中..."):
-            masked_text, was_masked = mask_text(user_input)
-    except MaskingError as exc:
-        st.error(
-            "Bedrock Guardrails の呼び出しに失敗しました。"
-            "AWS Region / Guardrail ID / Guardrail Version やIAM権限（bedrock:ApplyGuardrail）"
-            f"を確認してください。\n\n詳細: {exc}"
-        )
-        st.stop()
+    # ① マスキング（OFFの場合はそのまま使う）
+    masked_text, was_masked = user_input, False
+    if st.session_state.masking_enabled:
+        try:
+            with st.spinner("マスキング中..."):
+                masked_text, was_masked = mask_text(user_input)
+        except MaskingError as exc:
+            st.error(
+                "Bedrock Guardrails の呼び出しに失敗しました。"
+                "AWS Region / Guardrail ID / Guardrail Version やIAM権限（bedrock:ApplyGuardrail）"
+                f"を確認してください。\n\n詳細: {exc}"
+            )
+            st.stop()
 
     masked_note = None
     if was_masked:
@@ -222,30 +264,28 @@ if user_input:
         with st.expander("マスキング内容を確認", expanded=True):
             st.text(masked_note)
 
-    st.session_state.display_messages.append(
+    current["display_messages"].append(
         {"role": "user", "content": user_input, "masked_note": masked_note}
     )
+    if current["title"] == "新しいチャット":
+        current["title"] = user_input[:20] + ("…" if len(user_input) > 20 else "")
 
     # ② マスク後テキストで会話継続（履歴にはマスク後のものを積む）
-    st.session_state.api_messages.append(
-        {"role": "user", "content": [{"text": masked_text}]}
-    )
+    current["api_messages"].append({"role": "user", "content": [{"text": masked_text}]})
 
     with st.chat_message("assistant"):
         try:
             with st.spinner("Claudeが応答中..."):
-                reply = call_claude(st.session_state.api_messages)
+                reply = call_claude(current["api_messages"], st.session_state.model_key)
             st.write(reply)
         except ChatError as exc:
             st.error(
                 "Bedrock Claude の呼び出しに失敗しました。"
-                "AWS認証情報・IAM権限（bedrock:Converse）・モデルアクセス設定を確認してください。"
+                "AWS認証情報・IAM権限・モデルアクセス設定を確認してください。"
                 f"\n\n詳細: {exc}"
             )
-            st.session_state.api_messages.pop()  # 失敗したユーザー発言を履歴から取り消す
+            current["api_messages"].pop()  # 失敗したユーザー発言を履歴から取り消す
             st.stop()
 
-    st.session_state.api_messages.append(
-        {"role": "assistant", "content": [{"text": reply}]}
-    )
-    st.session_state.display_messages.append({"role": "assistant", "content": reply})
+    current["api_messages"].append({"role": "assistant", "content": [{"text": reply}]})
+    current["display_messages"].append({"role": "assistant", "content": reply})
