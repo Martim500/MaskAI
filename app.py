@@ -19,6 +19,7 @@ import uuid
 from datetime import datetime, timezone
 
 import boto3
+import pandas as pd
 import streamlit as st
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import BotoCoreError, ClientError
@@ -225,9 +226,11 @@ def get_guardrail_details() -> dict:
     )
 
 
-def save_pii_types(selected_types: set[str], current_details: dict) -> None:
+def save_guardrail_config(
+    selected_types: set[str], custom_regexes: list[dict], current_details: dict
+) -> None:
     client = bedrock_client("bedrock")
-    cfg = [
+    pii_cfg = [
         {
             "type": t,
             "action": "ANONYMIZE",
@@ -238,11 +241,28 @@ def save_pii_types(selected_types: set[str], current_details: dict) -> None:
         }
         for t in selected_types
     ]
+    regex_cfg = [
+        {
+            "name": r["name"],
+            "description": r.get("description") or r["name"],
+            "pattern": r["pattern"],
+            "action": "ANONYMIZE",
+            "inputAction": "ANONYMIZE",
+            "inputEnabled": True,
+            "outputAction": "ANONYMIZE",
+            "outputEnabled": True,
+        }
+        for r in custom_regexes
+        if r.get("name") and r.get("pattern")
+    ]
     client.update_guardrail(
         guardrailIdentifier=GUARDRAIL_ID,
         name=current_details["name"],
         description=current_details.get("description", ""),
-        sensitiveInformationPolicyConfig={"piiEntitiesConfig": cfg},
+        sensitiveInformationPolicyConfig={
+            "piiEntitiesConfig": pii_cfg,
+            "regexesConfig": regex_cfg,
+        },
         blockedInputMessaging=current_details["blockedInputMessaging"],
         blockedOutputsMessaging=current_details["blockedOutputsMessaging"],
     )
@@ -385,9 +405,37 @@ with st.sidebar:
                             if checked:
                                 selected.add(type_key)
 
+                    st.markdown("**カスタム正規表現（会社名など）**")
+                    st.caption(
+                        "name / pattern は必須。patternは正規表現として解釈されます"
+                        "（例: 会社名や略称を `|` で区切って複数指定）。"
+                    )
+                    current_regexes = details.get("sensitiveInformationPolicy", {}).get(
+                        "regexes", []
+                    )
+                    regex_df = pd.DataFrame(
+                        [
+                            {
+                                "name": r["name"],
+                                "pattern": r["pattern"],
+                                "description": r.get("description", ""),
+                            }
+                            for r in current_regexes
+                        ]
+                    ) if current_regexes else pd.DataFrame(
+                        columns=["name", "pattern", "description"]
+                    )
+                    edited_regex_df = st.data_editor(
+                        regex_df,
+                        num_rows="dynamic",
+                        use_container_width=True,
+                        key="regex_editor",
+                    )
+
                     if st.button("この内容でGuardrailを保存", use_container_width=True):
+                        custom_regexes = edited_regex_df.fillna("").to_dict("records")
                         try:
-                            save_pii_types(selected, details)
+                            save_guardrail_config(selected, custom_regexes, details)
                             st.session_state.pop("guardrail_snapshot", None)
                             st.success("Guardrail設定を更新しました。")
                             st.rerun()
