@@ -2,6 +2,8 @@
 マスキング付き Claude チャットアプリ（Amazon Bedrock版）
 - PIIマスキング: Amazon Bedrock Guardrails (ApplyGuardrail API)
 - 会話: Amazon Bedrock Converse API (Claude on Bedrock)
+- セッション永続化: DynamoDB
+- ユーザー識別: 簡易ログイン（社員名/IDの入力のみ、パスワード無し）
 
 起動方法:
     streamlit run app.py
@@ -10,12 +12,15 @@ AWS認証情報・Guardrail ID/Versionは .env / 環境変数からのみ読み�
 （画面上には表示・入力しない。.env.example 参照）。
 """
 
+import json
 import os
 import time
 import uuid
+from datetime import datetime, timezone
 
 import boto3
 import streamlit as st
+from boto3.dynamodb.conditions import Key
 from botocore.exceptions import BotoCoreError, ClientError
 from dotenv import load_dotenv
 
@@ -32,11 +37,30 @@ MODEL_IDS = {
     "claude-haiku-4-5-20251001": "jp.anthropic.claude-haiku-4-5-20251001-v1:0",
 }
 
+# 管理者パネルで切り替えられるPII種別（Bedrock Guardrailsが対応する全種別のうち、
+# docs/業務領域・ユースケースごとのデータ入力可否.xlsx を踏まえて選んだもの）
+AVAILABLE_PII_TYPES = {
+    "NAME": "氏名",
+    "EMAIL": "メールアドレス",
+    "PHONE": "電話番号",
+    "ADDRESS": "住所",
+    "AGE": "年齢",
+    "CREDIT_DEBIT_CARD_NUMBER": "クレジットカード番号",
+    "PASSWORD": "パスワード",
+    "USERNAME": "ユーザー名",
+    "AWS_ACCESS_KEY": "AWSアクセスキー",
+    "AWS_SECRET_KEY": "AWSシークレットキー",
+    "IP_ADDRESS": "IPアドレス",
+    "URL": "URL",
+}
+
 AWS_REGION = os.getenv("AWS_REGION", "ap-northeast-1")
 AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID", "")
 AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY", "")
 GUARDRAIL_ID = os.getenv("GUARDRAIL_ID", "")
 GUARDRAIL_VERSION = os.getenv("GUARDRAIL_VERSION", "DRAFT")
+SESSIONS_TABLE_NAME = os.getenv("SESSIONS_TABLE_NAME", "mori-ddb-maskai-prod-sessions")
+ADMIN_USERS = {u.strip() for u in os.getenv("ADMIN_USERS", "").split(",") if u.strip()}
 
 st.set_page_config(page_title="Masked Prompt Chat", layout="wide")
 
@@ -71,6 +95,59 @@ def bedrock_client(service_name: str):
         aws_access_key_id=AWS_ACCESS_KEY_ID or None,
         aws_secret_access_key=AWS_SECRET_ACCESS_KEY or None,
     )
+
+
+def dynamodb_table():
+    resource = boto3.resource(
+        "dynamodb",
+        region_name=AWS_REGION,
+        aws_access_key_id=AWS_ACCESS_KEY_ID or None,
+        aws_secret_access_key=AWS_SECRET_ACCESS_KEY or None,
+    )
+    return resource.Table(SESSIONS_TABLE_NAME)
+
+
+def load_user_sessions(user_id: str) -> dict:
+    """DynamoDBからそのユーザーの全セッションを読み込む。失敗時は空辞書を返し画面にエラー表示。"""
+    try:
+        resp = dynamodb_table().query(KeyConditionExpression=Key("user_id").eq(user_id))
+    except (ClientError, BotoCoreError) as exc:
+        st.error(f"セッション情報の読み込みに失敗しました: {exc}")
+        return {}
+
+    sessions = {}
+    for item in resp.get("Items", []):
+        sessions[item["session_id"]] = {
+            "title": item["title"],
+            "display_messages": json.loads(item["display_messages"]),
+            "api_messages": json.loads(item["api_messages"]),
+        }
+    return sessions
+
+
+def save_session(user_id: str, session_id: str, session: dict) -> None:
+    try:
+        dynamodb_table().put_item(
+            Item={
+                "user_id": user_id,
+                "session_id": session_id,
+                "title": session["title"],
+                "display_messages": json.dumps(
+                    session["display_messages"], ensure_ascii=False
+                ),
+                "api_messages": json.dumps(session["api_messages"], ensure_ascii=False),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+        )
+    except (ClientError, BotoCoreError) as exc:
+        st.error(f"セッションの保存に失敗しました: {exc}")
+
+
+def delete_session_record(user_id: str, session_id: str) -> None:
+    try:
+        dynamodb_table().delete_item(Key={"user_id": user_id, "session_id": session_id})
+    except (ClientError, BotoCoreError) as exc:
+        st.error(f"セッションの削除に失敗しました: {exc}")
 
 
 def mask_text(text: str) -> tuple[str, bool]:
@@ -116,7 +193,6 @@ def call_claude(messages: list[dict], model_key: str) -> str:
             content_blocks = response["output"]["message"]["content"]
             text_blocks = [block["text"] for block in content_blocks if "text" in block]
             if not text_blocks:
-                # 思考(reasoning)だけでmax_tokensに達した場合など、テキスト応答が無いケース
                 raise ChatError(
                     "モデルからテキスト応答が得られませんでした"
                     f"（stopReason={response.get('stopReason')}）。"
@@ -125,7 +201,6 @@ def call_claude(messages: list[dict], model_key: str) -> str:
             return "\n".join(text_blocks)
         except ClientError as exc:
             error_code = exc.response.get("Error", {}).get("Code", "")
-            # 認証・権限・入力不正はリトライしても解決しないため即座に失敗させる
             if error_code in (
                 "AccessDeniedException",
                 "UnrecognizedClientException",
@@ -143,7 +218,62 @@ def call_claude(messages: list[dict], model_key: str) -> str:
     raise ChatError(str(last_error)) from last_error
 
 
-# ── セッション状態初期化 ──────────────────────────────
+def get_guardrail_details() -> dict:
+    client = bedrock_client("bedrock")
+    return client.get_guardrail(
+        guardrailIdentifier=GUARDRAIL_ID, guardrailVersion=GUARDRAIL_VERSION
+    )
+
+
+def save_pii_types(selected_types: set[str], current_details: dict) -> None:
+    client = bedrock_client("bedrock")
+    cfg = [
+        {
+            "type": t,
+            "action": "ANONYMIZE",
+            "inputAction": "ANONYMIZE",
+            "inputEnabled": True,
+            "outputAction": "ANONYMIZE",
+            "outputEnabled": True,
+        }
+        for t in selected_types
+    ]
+    client.update_guardrail(
+        guardrailIdentifier=GUARDRAIL_ID,
+        name=current_details["name"],
+        description=current_details.get("description", ""),
+        sensitiveInformationPolicyConfig={"piiEntitiesConfig": cfg},
+        blockedInputMessaging=current_details["blockedInputMessaging"],
+        blockedOutputsMessaging=current_details["blockedOutputsMessaging"],
+    )
+
+
+# ── 起動時の必須設定チェック ──────────────────────────
+if not AWS_ACCESS_KEY_ID or not AWS_SECRET_ACCESS_KEY:
+    st.error(
+        "AWS認証情報が未設定です。.env の AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY を設定してください。"
+    )
+    st.stop()
+
+# ── 簡易ログイン（社員名/IDのみ、パスワード無し） ──────
+if "user_id" not in st.session_state:
+    st.title("Masked Prompt Chat")
+    st.caption("お名前または社員IDを入力してください")
+    with st.form("login_form"):
+        name_input = st.text_input("お名前 / 社員ID")
+        submitted = st.form_submit_button("ログイン")
+    if submitted:
+        if name_input.strip():
+            st.session_state.user_id = name_input.strip()
+            st.rerun()
+        else:
+            st.warning("お名前または社員IDを入力してください。")
+    st.stop()
+
+user_id = st.session_state.user_id
+is_admin = user_id in ADMIN_USERS
+
+# ── セッション状態初期化（初回はDynamoDBから読み込み） ──
 def new_session() -> str:
     session_id = str(uuid.uuid4())
     st.session_state.sessions[session_id] = {
@@ -156,25 +286,22 @@ def new_session() -> str:
 
 
 if "sessions" not in st.session_state:
-    st.session_state.sessions = {}
+    with st.spinner("セッションを読み込み中..."):
+        st.session_state.sessions = load_user_sessions(user_id)
     st.session_state.current_session_id = None
 if "masking_enabled" not in st.session_state:
     st.session_state.masking_enabled = True
 if "model_key" not in st.session_state:
     st.session_state.model_key = next(iter(MODEL_IDS))
-if not st.session_state.sessions:
-    new_session()
-
-# ── 起動時の必須設定チェック ──────────────────────────
-if not AWS_ACCESS_KEY_ID or not AWS_SECRET_ACCESS_KEY:
-    st.error(
-        "AWS認証情報が未設定です。.env の AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY を設定してください。"
-    )
-    st.stop()
+if not st.session_state.sessions or st.session_state.current_session_id is None:
+    if st.session_state.sessions:
+        st.session_state.current_session_id = next(iter(st.session_state.sessions))
+    else:
+        new_session()
 
 # ── サイドバー（Claude風: 新規チャット + セッション一覧 + 設定） ──
 with st.sidebar:
-    st.markdown("**Masked Prompt Chat**")
+    st.markdown(f"**Masked Prompt Chat**　`{user_id}`")
 
     if st.button("＋ 新しいチャット", use_container_width=True):
         new_session()
@@ -208,18 +335,64 @@ with st.sidebar:
 
         st.divider()
         if st.button("このチャットを削除", use_container_width=True):
+            delete_session_record(user_id, st.session_state.current_session_id)
             del st.session_state.sessions[st.session_state.current_session_id]
+            st.session_state.current_session_id = None
             if not st.session_state.sessions:
                 new_session()
-            else:
-                st.session_state.current_session_id = next(
-                    iter(st.session_state.sessions)
-                )
             st.rerun()
         if st.button("すべてのチャットを削除", use_container_width=True):
+            for sid in list(st.session_state.sessions.keys()):
+                delete_session_record(user_id, sid)
             st.session_state.sessions = {}
+            st.session_state.current_session_id = None
             new_session()
             st.rerun()
+
+        if is_admin:
+            st.divider()
+            with st.expander("🛡️ Guardrail管理（管理者）"):
+                if "guardrail_snapshot" not in st.session_state:
+                    try:
+                        st.session_state.guardrail_snapshot = get_guardrail_details()
+                    except (ClientError, BotoCoreError) as exc:
+                        st.error(f"Guardrail設定の取得に失敗しました: {exc}")
+                        st.session_state.guardrail_snapshot = None
+
+                if st.button("🔄 最新の設定を再取得"):
+                    try:
+                        st.session_state.guardrail_snapshot = get_guardrail_details()
+                    except (ClientError, BotoCoreError) as exc:
+                        st.error(f"Guardrail設定の取得に失敗しました: {exc}")
+
+                details = st.session_state.guardrail_snapshot
+                if details:
+                    current_types = {
+                        e["type"]
+                        for e in details.get("sensitiveInformationPolicy", {}).get(
+                            "piiEntities", []
+                        )
+                    }
+                    selected: set[str] = set()
+                    cols = st.columns(2)
+                    for i, (type_key, label) in enumerate(AVAILABLE_PII_TYPES.items()):
+                        with cols[i % 2]:
+                            checked = st.checkbox(
+                                label,
+                                value=type_key in current_types,
+                                key=f"pii_{type_key}",
+                            )
+                            if checked:
+                                selected.add(type_key)
+
+                    if st.button("この内容でGuardrailを保存", use_container_width=True):
+                        try:
+                            save_pii_types(selected, details)
+                            st.session_state.pop("guardrail_snapshot", None)
+                            st.success("Guardrail設定を更新しました。")
+                            st.rerun()
+                        except (ClientError, BotoCoreError) as exc:
+                            st.error(f"Guardrail設定の更新に失敗しました: {exc}")
 
 # ── メイン画面 ────────────────────────────────────────
 current = st.session_state.sessions[st.session_state.current_session_id]
@@ -289,3 +462,5 @@ if user_input:
 
     current["api_messages"].append({"role": "assistant", "content": [{"text": reply}]})
     current["display_messages"].append({"role": "assistant", "content": reply})
+
+    save_session(user_id, st.session_state.current_session_id, current)
