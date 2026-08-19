@@ -1,5 +1,5 @@
 """
-MaskAgent用のBedrock Guardrailを作成するワンショットスクリプト。
+Prompt Masking Tool用のBedrock Guardrailを作成するワンショットスクリプト。
 bedrock:CreateGuardrail権限を持つ認証情報で実行すること
 （REDACTED_IAM_USERには意図的にこの権限を付与していないため、
 ryuta.moriのMFA済みセッション、またはコンソール操作が必要）。
@@ -54,7 +54,7 @@ def main() -> None:
 
     response = client.create_guardrail(
         name=GUARDRAIL_NAME,
-        description="MaskAgentチャットアプリ用: 入力中のPIIをマスキングする",
+        description="Prompt Masking Tool用: 入力中のPIIをマスキングする",
         sensitiveInformationPolicyConfig={"piiEntitiesConfig": pii_entities_config},
         blockedInputMessaging="このメッセージには送信できない内容が含まれています。",
         blockedOutputsMessaging="この回答は表示できません。",

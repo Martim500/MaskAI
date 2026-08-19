@@ -1,22 +1,18 @@
-# Masked Prompt Chat
+# Prompt Masking Tool
 
-Bedrock Guardrails でPIIをマスキングしてから、Amazon Bedrock経由のClaudeに渡すチャットアプリです。
-会話・マスキングともにAWS（Amazon Bedrock）のみで完結し、Anthropic API（api.anthropic.com）は使用しません。
+入力したテキストのPIIを Amazon Bedrock Guardrails でマスキングして表示するだけのツールです。
+**AI（Claude等）への送信は行いません。** マスキング後のテキストは、ご自身で他のAIチャット等にコピーしてお使いください。
 
 ## 事前準備
 
 ### 1. IAMユーザー
 このアプリ専用のIAMユーザー（本リポジトリでは `REDACTED_IAM_USER` を想定）を用意してください。
 必要なIAM権限（最低限）:
-- `bedrock:InvokeModel` / `bedrock:InvokeModelWithResponseStream`（Converse APIの権限もこれでカバーされる。`bedrock:Converse`は別途不要）
-- `bedrock:ApplyGuardrail`
+- `bedrock:ApplyGuardrail`（マスキング処理そのもの）
+- `bedrock:GetGuardrail` / `bedrock:UpdateGuardrail`（画面上のGuardrail設定パネルから対象PII・カスタム正規表現を編集する場合）
 
 > MFA必須ポリシー（`BlockNonMFARequests`等）が付与されたメインユーザーとは別に、
-> アプリ専用ユーザーを分離しておくと、常時起動するアプリからの利用がしやすくなります。
-
-> **モデルIDについて**: オンデマンド呼び出しでは生のfoundation-model ID（例: `anthropic.claude-sonnet-5`）は使えず、
-> 推論プロファイルID（例: `jp.anthropic.claude-opus-4-8`, `global.anthropic.claude-sonnet-5`）を指定する必要がある。
-> `aws bedrock list-inference-profiles` で確認できる。本アプリの `app.py` は動作確認済みのプロファイルIDを設定済み。
+> アプリ専用ユーザーを分離しておくと運用しやすくなります。
 
 ### 2. Bedrock Guardrail の作成
 以下のいずれかで作成する。
@@ -28,13 +24,10 @@ Bedrock Guardrails でPIIをマスキングしてから、Amazon Bedrock経由�
   ```bash
   python scripts/create_guardrail.py
   ```
-  を実行すると、同じ設定（氏名・メール・電話番号・住所・クレジットカード番号をマスク）でGuardrailを自動作成する。
-  ※ MaskAgentアプリ実行用のIAMユーザーには、この作成権限はあえて付与していない（最小権限のため）。
+  を実行すると、同じ設定（氏名・メール・電話番号・住所・クレジットカード番号・年齢をマスク）でGuardrailを自動作成する。
+  ※ アプリ実行用のIAMユーザーには、この作成権限はあえて付与していない（最小権限のため）。
 
 作成後、Guardrail ID と Version（未発行の場合は `DRAFT`）を控える。
-
-### 3. モデルアクセス
-Bedrock コンソール → モデルアクセス で、使用するClaudeモデル（Sonnet 5 / Opus 4.8 / Haiku 4.5）へのアクセスを有効化してください。
 
 ## セットアップ
 
@@ -45,7 +38,7 @@ pip install -r requirements.txt
 ### 設定値の指定方法
 
 AWS認証情報・Guardrail ID/Versionは `.env` ファイル（または環境変数）からのみ読み込みます。
-**画面（サイドバー）には表示・入力欄がありません。**
+**画面には表示・入力欄がありません。**
 
 ```bash
 cp .env.example .env
@@ -79,30 +72,32 @@ streamlit run app.py
 
 `.streamlit/config.toml` により、サーバーは `127.0.0.1`（localhost）のみでLISTENします。
 **同一PC内のブラウザからしかアクセスできず、LANや外部ネットワークからは接続できません。**
-（つまり「サーバーを立ててIPを公開する」ようなものではなく、このPC専用の入り口が開くだけです）
+（「サーバーを立ててIPを公開する」ようなものではなく、このPC専用の入り口が開くだけです）
 
 ## 使い方
-1. 左サイドバー上部の「＋ 新しいチャット」で会話セッションを作成・切り替えできる（Claudeライクな左ナビ構成）
-2. 下部のチャット欄にメッセージを入力
-3. マスキングが発生した場合は入力直後に「マスキング内容を確認」で元テキストとの差分が見られる
-4. マスク後のテキストがBedrock Claudeに送信され、会話は履歴を保持したまま継続する
-5. サイドバー下部の「⚙️ 設定」から、PIIマスキングのON/OFF切り替え・使用モデルの選択ができる
-   （OFFにするとGuardrailsを通さず入力をそのままClaudeに送信するため、画面上部に警告が表示される）
+1. テキスト入力欄にマスキングしたい文章を貼り付ける
+2. 「マスキングする」ボタンを押す
+3. マスキング後のテキストが表示される（右上のアイコンでコピーできる）。マスキングが発生した場合は「元のテキストとの差分を確認」で内容を確認できる
+4. コピーしたテキストは、ご自身で他のAIチャット等に貼り付けて使う
+
+### Guardrail設定（マスキング対象の管理）
+画面上部の「⚙️ Guardrail設定」を開くと、
+- マスキング対象のPII種別（氏名・メール・電話番号・住所・年齢・クレジットカード番号など）のON/OFF
+- カスタム正規表現（会社名など、任意の文字列パターン）の追加・編集・削除
+
+ができます。保存すると、その場でAWS側のGuardrail設定に反映されます（ログイン等は無く、この画面を開ける人なら誰でも変更できます）。
 
 ## エラー時の挙動
 - AWS認証情報（`.env`）が未設定の場合は、アプリ起動直後にエラーを表示して停止する
-- マスキングON時にGuardrail IDが未設定の場合は、送信前にエラーメッセージを表示して処理を止める
+- Guardrail IDが未設定の場合は、マスキング実行前にエラーメッセージを表示する
 - Bedrock Guardrails の呼び出し（`apply_guardrail`）が失敗した場合は最大3回まで自動リトライし、
   それでも失敗した場合はAWS Region / Guardrail ID / Guardrail Version やIAM権限を確認するよう促すエラーを表示する
-- Bedrock Claude（Converse API）の呼び出しが失敗した場合も同様に自動リトライする
-  （認証エラー・権限不足・不正リクエストなどはリトライせず即座にエラー表示）
 - いずれの場合も例外を握りつぶさず、画面にエラー内容を表示する
 
 ## 補足
-- マスキングは各ユーザー発言ごとに実行されます（Claudeの返信自体はマスキングしません）
-- 会話（セッション）はブラウザのタブを閉じる・アプリを再起動すると失われます（永続化はしていません）
+- 入力したテキストや会話履歴は保存されません（ページを再読み込みすると消えます）
 - AWSアクセスキーは `.env` のみで管理し、画面には一切表示されません
 
 ## docs/
-社内の生成AI利用ポリシー（業務領域・ユースケースごとのデータ入力可否）を格納。
-今後Guardrailsの拒否トピック（Denied Topics）設計の元ネタとして使用する。
+- `architecture.md`: 構成メモ
+- `業務領域・ユースケースごとのデータ入力可否.xlsx` / `MaskAI要件.png`: 社内の生成AI利用ポリシー資料（参考情報として保管）
