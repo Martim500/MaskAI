@@ -3,16 +3,34 @@
 入力したテキストのPIIを Amazon Bedrock Guardrails でマスキングして表示するだけのツールです。
 **AI（Claude等）への送信は行いません。** マスキング後のテキストは、ご自身で他のAIチャット等にコピーしてお使いください。
 
+> **このリポジトリは公開設定です。** AWSアカウントID・IAMユーザー名・Guardrail IDなど、
+> 実際の環境固有の情報は一切含まれていません。使い始める前に、ご自身の環境の情報を
+> `docs/private-notes.md`（Gitにはコミットされない、あなたのPCだけのファイル）にまとめてから
+> セットアップしてください。詳しくは下記「0. 最初にやること」を参照してください。
+
+## 0. 最初にやること（利用者ごとに必要な準備）
+
+このツールを使うには、**あなた自身のAWS環境の情報**が必要です。以下の手順でファイルを作成してください。
+
+```bash
+cp docs/private-notes.example.md docs/private-notes.md
+cp .env.example .env
+```
+
+`docs/private-notes.md` はあなたのAWSアカウントID・IAMユーザー名・Guardrail IDなどを書き留めておくための
+備忘録です（`.gitignore`で除外済みなのでGitに上がりません）。`.env`は実際にアプリが読み込む認証情報の置き場所です。
+このあとの手順で、この2つのファイルに実際の値を記入していきます。
+
 ## 事前準備
 
 ### 1. IAMユーザー
-このアプリ専用のIAMユーザー（本リポジトリでは `REDACTED_IAM_USER` を想定）を用意してください。
+このアプリ専用のIAMユーザーを、AWSコンソールで新規作成してください（ユーザー名は任意。
+`docs/private-notes.md` に記録しておく）。
 必要なIAM権限（最低限）:
 - `bedrock:ApplyGuardrail`（マスキング処理そのもの）
 - `bedrock:GetGuardrail` / `bedrock:UpdateGuardrail`（画面上のGuardrail設定パネルから対象PII・カスタム正規表現を編集する場合）
 
-> MFA必須ポリシー（`BlockNonMFARequests`等）が付与されたメインユーザーとは別に、
-> アプリ専用ユーザーを分離しておくと運用しやすくなります。
+> MFA必須ポリシー等が付与されたメインユーザーとは別に、アプリ専用ユーザーを分離しておくと運用しやすくなります。
 
 ### 2. Bedrock Guardrail の作成
 以下のいずれかで作成する。
@@ -27,7 +45,7 @@
   を実行すると、同じ設定（氏名・メール・電話番号・住所・クレジットカード番号・年齢をマスク）でGuardrailを自動作成する。
   ※ アプリ実行用のIAMユーザーには、この作成権限はあえて付与していない（最小権限のため）。
 
-作成後、Guardrail ID と Version（未発行の場合は `DRAFT`）を控える。
+作成後、Guardrail ID と Version（未発行の場合は `DRAFT`）を控える（`.env`と`docs/private-notes.md`の両方に記入）。
 
 ## セットアップ
 
@@ -40,11 +58,7 @@ pip install -r requirements.txt
 AWS認証情報・Guardrail ID/Versionは `.env` ファイル（または環境変数）からのみ読み込みます。
 **画面には表示・入力欄がありません。**
 
-```bash
-cp .env.example .env
-```
-
-`.env` の内容:
+`.env` の内容（`.env.example`をコピーして作成）:
 
 ```
 AWS_REGION=ap-northeast-1
@@ -74,6 +88,13 @@ streamlit run app.py
 **同一PC内のブラウザからしかアクセスできず、LANや外部ネットワークからは接続できません。**
 （「サーバーを立ててIPを公開する」ようなものではなく、このPC専用の入り口が開くだけです）
 
+### Dockerで使う場合
+```bash
+start-docker.bat   # ビルド＋起動、ブラウザが自動で開く
+stop-docker.bat    # 停止
+```
+`.env` が同じフォルダに必要です（`docker run --env-file .env` で読み込みます。イメージには焼き込みません）。
+
 ## 使い方
 1. テキスト入力欄にマスキングしたい文章を貼り付ける
 2. 「マスキングする」ボタンを押す
@@ -100,4 +121,7 @@ streamlit run app.py
 
 ## docs/
 - `architecture.md`: 構成メモ
+- `開発記録.md`: 開発の経緯・発生した問題と対応をまとめた記録
+- `private-notes.example.md`: あなたの環境固有の情報（AWSアカウントID等）を記録するためのテンプレート。
+  コピーして `private-notes.md` を作り使う（Gitにはコミットされない）
 - `業務領域・ユースケースごとのデータ入力可否.xlsx` / `MaskAI要件.png`: 社内の生成AI利用ポリシー資料（参考情報として保管）

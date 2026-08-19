@@ -1,8 +1,8 @@
 """
 Prompt Masking Tool用のBedrock Guardrailを作成するワンショットスクリプト。
 bedrock:CreateGuardrail権限を持つ認証情報で実行すること
-（REDACTED_IAM_USERには意図的にこの権限を付与していないため、
-ryuta.moriのMFA済みセッション、またはコンソール操作が必要）。
+（アプリ実行用のIAMユーザーには意図的にこの権限を付与していない場合、
+管理者権限を持つ別ユーザー、またはコンソール操作が必要）。
 
 実行方法:
     python scripts/create_guardrail.py

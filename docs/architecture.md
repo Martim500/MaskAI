@@ -19,10 +19,10 @@ Amazon Bedrock GuardrailsでPII（氏名・メール・電話番号・住所・�
 ```mermaid
 flowchart TD
     U[ブラウザ<br/>http://localhost:8501] -->|HTTP (127.0.0.1限定)| App[Streamlit アプリ app.py]
-    App -->|apply_guardrail| GR[Bedrock Guardrails<br/>REDACTED_GUARDRAIL_ID]
+    App -->|apply_guardrail| GR[Bedrock Guardrails<br/>GUARDRAIL_ID（.envで指定）]
     App -->|get_guardrail/update_guardrail<br/>設定パネルから| GR
 
-    subgraph AWS["AWSアカウント REDACTED_ACCOUNT_ID (ap-northeast-1)"]
+    subgraph AWS["AWSアカウント（docs/private-notes.md参照）"]
       GR
     end
 ```
